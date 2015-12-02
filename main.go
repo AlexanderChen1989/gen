@@ -1,7 +1,10 @@
 package main
 
-import "fmt"
-import "./kv"
+import (
+	"fmt"
+
+	"github.com/AlexanderChen1989/gen/kv"
+)
 
 func main() {
 	kvs := kv.NewKVServer()
