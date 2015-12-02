@@ -8,12 +8,13 @@ func NewKVStore() KV {
 
 type kvstore struct{}
 
-func (_ kvstore) Get(kv KV, k string) string {
-	return kv[k]
+func (_ kvstore) Get(kv KV, k string) (string, KV) {
+	return kv[k], kv
 }
 
-func (_ kvstore) Put(kv KV, k, v string) {
+func (_ kvstore) Put(kv KV, k, v string) KV {
 	kv[k] = v
+	return kv
 }
 
 var KVStore = kvstore{}
