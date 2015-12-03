@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 type KVMServer struct {
@@ -33,13 +34,12 @@ type Task interface {
 
 type Supervisor struct {
 	GenServer
+	done  chan struct{}
 	tasks []Task
 }
 
 func (sup *Supervisor) Stop() <-chan struct{} {
-	ch := make(chan struct{})
-
-	sup.Submit(func() {
+	return sup.SubmitChan(func() {
 		// stop all tasks
 		var wg sync.WaitGroup
 		wg.Add(len(sup.tasks))
@@ -51,23 +51,41 @@ func (sup *Supervisor) Stop() <-chan struct{} {
 		}
 		wg.Wait()
 
+		close(sup.done)
 		// stop self
 		<-sup.GenServer.Stop()
-		close(ch)
 	})
-
-	return ch
 }
 
-func (sup *Supervisor) AddTask(tasks ...Task) <-chan struct{} {
-	ch := make(chan struct{})
+func (sup *Supervisor) watch(task Task) {
+	for {
+		select {
+		case <-sup.done:
+			<-task.Stop()
+			return
+		case <-task.Ping():
+		case <-time.After(100 * time.Millisecond):
+			fmt.Println("task is stopped, will try to restart")
+			<-task.Start()
+		}
+		// task is runing, wait for 100 milliseconds
+		time.Sleep(100 * time.Millisecond)
+	}
+}
 
-	sup.Submit(func() {
-		sup.tasks = append(sup.tasks, tasks...)
+func (sup *Supervisor) SuperviseTasks() <-chan struct{} {
+	return sup.SubmitChan(func() {
+		for _, task := range sup.tasks {
+			go sup.watch(task)
+		}
+	})
+}
 
+func (sup *Supervisor) StartTasks() <-chan struct{} {
+	return sup.SubmitChan(func() {
 		// start all tasks
 		var wg sync.WaitGroup
-		wg.Add(len(tasks))
+		wg.Add(len(sup.tasks))
 		for _, task := range sup.tasks {
 			go func(t Task) {
 				<-t.Start()
@@ -75,11 +93,13 @@ func (sup *Supervisor) AddTask(tasks ...Task) <-chan struct{} {
 			}(task)
 		}
 		wg.Wait()
-
-		close(ch)
 	})
+}
 
-	return ch
+func (sup *Supervisor) AddTasks(tasks ...Task) <-chan struct{} {
+	return sup.SubmitChan(func() {
+		sup.tasks = append(sup.tasks, tasks...)
+	})
 }
 
 func TestSupervisor(t *testing.T) {
@@ -87,10 +107,13 @@ func TestSupervisor(t *testing.T) {
 		kv: make(map[string]string),
 	}
 	sup := new(Supervisor)
-	sup.Start()
 	<-sup.Start()
-	<-sup.AddTask(kvm)
+	<-sup.AddTasks(kvm)
+	<-sup.StartTasks()
+	<-sup.SuperviseTasks()
+
 	kvm.Put("Hello", "100")
 	fmt.Println(kvm.Get("Hello"))
+
 	<-sup.Stop()
 }
