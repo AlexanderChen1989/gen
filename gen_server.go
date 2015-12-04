@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"errors"
 	"fmt"
 	"log"
 )
@@ -24,37 +25,50 @@ func (gen *GenServer) loop() {
 	}
 }
 
-func (gen *GenServer) Submit(fn func()) {
-	gen.evts <- fn
+var ErrServerNotRunning = errors.New("server not running")
+
+func (gen *GenServer) Submit(fn func()) error {
+	select {
+	case gen.evts <- fn:
+	default:
+		return ErrServerNotRunning
+	}
+	return nil
 }
 
-func (gen *GenServer) SubmitChan(fn func()) <-chan struct{} {
-	ch := make(chan struct{})
-	gen.Submit(func() {
+func (gen *GenServer) SubmitChan(fn func()) <-chan error {
+	ch := make(chan error, 1)
+	ch <- gen.Submit(func() {
 		defer close(ch)
 		fn()
 	})
 	return ch
 }
 
-func (gen *GenServer) Stop() <-chan struct{} {
-	ch := make(chan struct{})
-	gen.evts <- func() {
+func (gen *GenServer) Stop() <-chan error {
+	ch := make(chan error)
+	err := <-gen.SubmitChan(func() {
 		close(gen.done)
 		close(ch)
-	}
-	return ch
-}
-
-func (gen *GenServer) Ping() <-chan struct{} {
-	ch := make(chan struct{})
-	gen.evts <- func() {
+	})
+	if err != nil {
 		close(ch)
 	}
 	return ch
 }
 
-func (gen *GenServer) Start() <-chan struct{} {
+func (gen *GenServer) Ping() <-chan error {
+	ch := make(chan error)
+	err := <-gen.SubmitChan(func() {
+		close(ch)
+	})
+	if err != nil {
+		close(ch)
+	}
+	return ch
+}
+
+func (gen *GenServer) Start() <-chan error {
 	if gen == nil {
 		gen = new(GenServer)
 	}

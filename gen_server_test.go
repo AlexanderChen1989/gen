@@ -38,7 +38,7 @@ type Supervisor struct {
 	tasks []Task
 }
 
-func (sup *Supervisor) Stop() <-chan struct{} {
+func (sup *Supervisor) Stop() (<-chan struct{}, error) {
 	return sup.SubmitChan(func() {
 		// stop all tasks
 		var wg sync.WaitGroup
@@ -73,7 +73,7 @@ func (sup *Supervisor) watch(task Task) {
 	}
 }
 
-func (sup *Supervisor) SuperviseTasks() <-chan struct{} {
+func (sup *Supervisor) SuperviseTasks() (<-chan struct{}, error) {
 	return sup.SubmitChan(func() {
 		for _, task := range sup.tasks {
 			go sup.watch(task)
@@ -81,7 +81,7 @@ func (sup *Supervisor) SuperviseTasks() <-chan struct{} {
 	})
 }
 
-func (sup *Supervisor) StartTasks() <-chan struct{} {
+func (sup *Supervisor) StartTasks() (<-chan struct{}, error) {
 	return sup.SubmitChan(func() {
 		// start all tasks
 		var wg sync.WaitGroup
@@ -96,7 +96,7 @@ func (sup *Supervisor) StartTasks() <-chan struct{} {
 	})
 }
 
-func (sup *Supervisor) AddTasks(tasks ...Task) <-chan struct{} {
+func (sup *Supervisor) AddTasks(tasks ...Task) (<-chan struct{}, error) {
 	return sup.SubmitChan(func() {
 		sup.tasks = append(sup.tasks, tasks...)
 	})
@@ -107,13 +107,14 @@ func TestSupervisor(t *testing.T) {
 		kv: make(map[string]string),
 	}
 	sup := new(Supervisor)
-	<-sup.Start()
-	<-sup.AddTasks(kvm)
+	sup.Start()
+	sup.AddTasks(kvm)
 	<-sup.StartTasks()
 	<-sup.SuperviseTasks()
 
 	kvm.Put("Hello", "100")
 	fmt.Println(kvm.Get("Hello"))
-
+	<-kvm.Stop()
+	fmt.Println(kvm.Get("Hello"))
 	<-sup.Stop()
 }
