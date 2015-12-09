@@ -10,14 +10,14 @@ import (
 )
 
 func TestServer(t *testing.T) {
-	const num = 100
+	const num = 5
 	s := newServer(context.Background())
 	for i := 0; i < num; i++ {
 		s.Start()
 	}
 
 	for i := 0; i < num; i++ {
-		assert.Nil(t, s.Ping())
+		assert.Nil(t, s.Ping(10*time.Millisecond))
 		err := s.Submit(func(ctx context.Context) {
 			select {
 			case <-ctx.Done():

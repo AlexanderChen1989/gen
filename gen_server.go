@@ -63,19 +63,19 @@ func Timeout(timeout time.Duration) func(task) task {
 type GenServer interface {
 	Start() error
 	Stop() error
-	Ping() error
+	Ping(timeout time.Duration) error
 	Submit(fn func(ctx context.Context), setups ...func(task) task) error
 }
 
 func New(ctx context.Context) GenServer {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	return newServer(ctx)
 }
 
-func newServer(ori context.Context) *genServer {
-	ctx, cancel := context.WithCancel(ori)
+func newServer(orig context.Context) *genServer {
+	if orig == nil {
+		orig = context.Background()
+	}
+	ctx, cancel := context.WithCancel(orig)
 	return &genServer{
 		ctx:   ctx,
 		ping:  make(chan struct{}),
@@ -140,11 +140,11 @@ func (s *genServer) Stop() error {
 
 var ErrTimeout = errors.New("timeout")
 
-func (s *genServer) Ping() error {
+func (s *genServer) Ping(timeout time.Duration) error {
 	select {
 	case <-s.ping:
 		return nil
-	case <-time.After(time.Second):
+	case <-time.After(timeout):
 		return ErrTimeout
 	}
 }
