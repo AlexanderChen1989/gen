@@ -1,120 +1,49 @@
 package gen
 
 import (
-	"fmt"
-	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+
+	"golang.org/x/net/context"
 )
 
-type KVMServer struct {
-	GenServer
-	kv map[string]string
-}
+func TestServer(t *testing.T) {
+	const num = 100
+	s := newServer(context.Background())
+	for i := 0; i < num; i++ {
+		s.Start()
+	}
 
-func (gs *KVMServer) Put(k, v string) {
-	gs.Submit(func() {
-		gs.kv[k] = v
-	})
-}
-
-func (gs *KVMServer) Get(k string) string {
-	ch := make(chan string)
-	gs.Submit(func() {
-		ch <- gs.kv[k]
-	})
-	return <-ch
-}
-
-type Task interface {
-	Start() <-chan struct{}
-	Stop() <-chan struct{}
-	Ping() <-chan struct{}
-}
-
-type Supervisor struct {
-	GenServer
-	done  chan struct{}
-	tasks []Task
-}
-
-func (sup *Supervisor) Stop() (<-chan struct{}, error) {
-	return sup.SubmitChan(func() {
-		// stop all tasks
-		var wg sync.WaitGroup
-		wg.Add(len(sup.tasks))
-		for _, task := range sup.tasks {
-			go func(t Task) {
-				<-t.Stop()
-				wg.Done()
-			}(task)
-		}
-		wg.Wait()
-
-		close(sup.done)
-		// stop self
-		<-sup.GenServer.Stop()
-	})
-}
-
-func (sup *Supervisor) watch(task Task) {
-	for {
+	for i := 0; i < num; i++ {
+		assert.Nil(t, s.Ping())
+		err := s.Submit(func(ctx context.Context) {
+			select {
+			case <-ctx.Done():
+			case <-time.After(20 * time.Millisecond):
+				t.Error("shoud timeout")
+			}
+		}, Timeout(10*time.Millisecond))
+		assert.Nil(t, err)
+		s.Submit(func(ctx context.Context) {
+			time.Sleep(2 * time.Second)
+		}, Async)
+		ch := make(chan bool)
+		s.Submit(func(ctx context.Context) {
+			ch <- true
+		}, Async)
 		select {
-		case <-sup.done:
-			<-task.Stop()
-			return
-		case <-task.Ping():
-		case <-time.After(100 * time.Millisecond):
-			fmt.Println("task is stopped, will try to restart")
-			<-task.Start()
+		case <-ch:
+		case <-time.After(10 * time.Millisecond):
+			t.Error("should async")
 		}
-		// task is runing, wait for 100 milliseconds
-		time.Sleep(100 * time.Millisecond)
+		s.Submit(func(ctx context.Context) {
+			panic("")
+		})
 	}
-}
 
-func (sup *Supervisor) SuperviseTasks() (<-chan struct{}, error) {
-	return sup.SubmitChan(func() {
-		for _, task := range sup.tasks {
-			go sup.watch(task)
-		}
-	})
-}
-
-func (sup *Supervisor) StartTasks() (<-chan struct{}, error) {
-	return sup.SubmitChan(func() {
-		// start all tasks
-		var wg sync.WaitGroup
-		wg.Add(len(sup.tasks))
-		for _, task := range sup.tasks {
-			go func(t Task) {
-				<-t.Start()
-				wg.Done()
-			}(task)
-		}
-		wg.Wait()
-	})
-}
-
-func (sup *Supervisor) AddTasks(tasks ...Task) (<-chan struct{}, error) {
-	return sup.SubmitChan(func() {
-		sup.tasks = append(sup.tasks, tasks...)
-	})
-}
-
-func TestSupervisor(t *testing.T) {
-	kvm := &KVMServer{
-		kv: make(map[string]string),
+	for i := 0; i < num; i++ {
+		s.Stop()
 	}
-	sup := new(Supervisor)
-	sup.Start()
-	sup.AddTasks(kvm)
-	<-sup.StartTasks()
-	<-sup.SuperviseTasks()
-
-	kvm.Put("Hello", "100")
-	fmt.Println(kvm.Get("Hello"))
-	<-kvm.Stop()
-	fmt.Println(kvm.Get("Hello"))
-	<-sup.Stop()
 }

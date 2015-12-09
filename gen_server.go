@@ -3,97 +3,145 @@ package gen
 import (
 	"errors"
 	"fmt"
-	"log"
+	"sync"
+	"time"
+
+	"golang.org/x/net/context"
 )
 
-type GenServer struct {
-	done chan struct{}
-	evts chan func()
+type taskType int
+
+const (
+	syncTask taskType = iota
+	asyncTask
+)
+
+type task struct {
+	typ     taskType
+	timeout time.Duration
+	action  func(ctx context.Context)
 }
 
-func (gen *GenServer) loop() {
+func (t task) Do(ctx context.Context) {
+	if t.timeout > 0 {
+		ctx, _ = context.WithTimeout(ctx, t.timeout)
+	}
+	switch t.typ {
+	case syncTask:
+		t.action(ctx)
+	case asyncTask:
+		go t.action(ctx)
+	}
+}
+
+func recoverTask(t task) task {
+	orig := t.action
+
+	t.action = func(ctx context.Context) {
+		defer func() {
+			recover()
+		}()
+
+		orig(ctx)
+	}
+
+	return t
+}
+
+func Async(t task) task {
+	t.typ = asyncTask
+	return t
+}
+
+func Timeout(timeout time.Duration) func(task) task {
+	return func(t task) task {
+		t.timeout = timeout
+		return t
+	}
+}
+
+type GenServer interface {
+	Start() error
+	Stop() error
+	Ping() error
+	Submit(fn func(ctx context.Context), setups ...func(task) task) error
+}
+
+func New(ctx context.Context) GenServer {
+	return newServer(ctx)
+}
+
+func newServer(ori context.Context) *genServer {
+	ctx, cancel := context.WithCancel(ori)
+	return &genServer{
+		ctx:   ctx,
+		ping:  make(chan struct{}),
+		tasks: make(chan task),
+		cancel: func() {
+			fmt.Println("Cancel")
+			cancel()
+		},
+	}
+}
+
+type genServer struct {
+	ctx        context.Context
+	cancel     func()
+	cancelOnce sync.Once
+	startOnce  sync.Once
+	ping       chan struct{}
+	tasks      chan task
+}
+
+func (s *genServer) loop() {
+	fmt.Println("Start")
 	for {
 		select {
-		case <-gen.done:
+		case t := <-s.tasks:
+			t.Do(s.ctx)
+		case s.ping <- struct{}{}:
+		case <-s.ctx.Done():
+			fmt.Println("Done")
 			return
-		case evt := <-gen.evts:
-			err := recoverWrapper(evt)
-			if err != nil {
-				log.Println(err)
-			}
 		}
 	}
 }
 
-var ErrServerNotRunning = errors.New("server not running")
+var ErrNotRunning = errors.New("genServer not running")
 
-func (gen *GenServer) Submit(fn func()) error {
-	select {
-	case gen.evts <- fn:
-	default:
-		return ErrServerNotRunning
+func (s *genServer) submit(t task, setups ...func(task) task) error {
+	for _, setup := range setups {
+		t = setup(t)
 	}
+	select {
+	case s.tasks <- t:
+		return nil
+	case <-s.ctx.Done():
+		return ErrNotRunning
+	}
+}
+
+func (s *genServer) Submit(fn func(ctx context.Context), setups ...func(task) task) error {
+	return s.submit(task{typ: syncTask, action: fn}, append(setups, recoverTask)...)
+}
+
+func (s *genServer) Start() error {
+	go s.startOnce.Do(s.loop)
 	return nil
 }
 
-func (gen *GenServer) SubmitChan(fn func()) <-chan error {
-	ch := make(chan error, 1)
-	ch <- gen.Submit(func() {
-		defer close(ch)
-		fn()
-	})
-	return ch
+func (s *genServer) Stop() error {
+	s.cancelOnce.Do(s.cancel)
+	return nil
 }
 
-func (gen *GenServer) Stop() <-chan error {
-	ch := make(chan error)
-	err := <-gen.SubmitChan(func() {
-		close(gen.done)
-		close(ch)
-	})
-	if err != nil {
-		close(ch)
+var ErrTimeout = errors.New("timeout")
+
+func (s *genServer) Ping() error {
+	select {
+	case <-s.ping:
+		return nil
+	case <-time.After(time.Second):
+		return ErrTimeout
 	}
-	return ch
-}
-
-func (gen *GenServer) Ping() <-chan error {
-	ch := make(chan error)
-	err := <-gen.SubmitChan(func() {
-		close(ch)
-	})
-	if err != nil {
-		close(ch)
-	}
-	return ch
-}
-
-func (gen *GenServer) Start() <-chan error {
-	if gen == nil {
-		gen = new(GenServer)
-	}
-
-	gen.done = make(chan struct{})
-
-	if gen.evts == nil {
-		gen.evts = make(chan func())
-	}
-
-	go gen.loop()
-	return gen.Ping()
-}
-
-func recoverWrapper(fn func()) (err error) {
-	defer func() {
-		switch e := recover().(type) {
-		case nil:
-		case error:
-			err = e
-		default:
-			err = fmt.Errorf("%v\n", e)
-		}
-	}()
-
-	fn()
-	return
 }
