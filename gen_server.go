@@ -68,6 +68,9 @@ type GenServer interface {
 }
 
 func New(ctx context.Context) GenServer {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return newServer(ctx)
 }
 
